@@ -1,0 +1,15 @@
+From: IT Security Support <alerts@company-internal.com>
+Return-Path: <attacker@scam-server123.com>
+To: target-employee@company.com
+Subject: URGENT: Password Expiry Notification
+Authentication-Results: mx.google.com; spf=fail smtp.mailfrom=scam-server123.com; dkim=fail; dmarc=fail
+
+Dear Employee,
+
+Your corporate password will expire within 2 hours.
+Please verify your credentials immediately to avoid account suspension:
+
+https://google.com
+
+Best regards,
+IT Security Desk

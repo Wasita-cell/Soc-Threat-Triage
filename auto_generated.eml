@@ -1,0 +1,9 @@
+Subject: Test Phishing Subject
+From: Fake Support <scam@test.com>
+To: victim@company.com
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+Please click the link below to verify your account:
+https://phish-link.test
