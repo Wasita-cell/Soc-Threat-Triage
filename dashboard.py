@@ -185,6 +185,20 @@ with tab_email:
                     for flag in sender_flags:
                         st.markdown(f"- {flag}")
 
+                # Display Impersonation & Social Engineering Alerts
+                impersonation_alerts = email_report.get("impersonation_alerts", [])
+                if impersonation_alerts:
+                    st.error("🚨 **Brand Impersonation & Social Engineering:**")
+                    for alert in impersonation_alerts:
+                        st.markdown(f"- {alert}")
+
+                # Display Subdomain Deception Warnings
+                url_deception_flags = email_report.get("url_deception_flags", [])
+                if url_deception_flags:
+                    st.warning("⚠️ **URL Subdomain Deception Detected:**")
+                    for flag in url_deception_flags:
+                        st.markdown(f"- {flag}")
+
                 st.markdown("### Harvested Link IOCs (Defanged)")
                 extracted_urls = email_report.get("extracted_urls", [])
                 if extracted_urls:

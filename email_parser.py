@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Phishing Email (.eml) Artifact & Header Parser
-Extracts authentication telemetry, detects sender mismatches, and harvests embedded URLs.
+Features:
+- Authentication results extraction (SPF, DKIM, DMARC)
+- Freemail & Brand Impersonation detection (e.g., Bank/Support lures using @gmail.com)
+- Subdomain deception and phishing URL harvesting
 """
 from __future__ import annotations
 
@@ -14,6 +17,24 @@ from urllib.parse import urlparse
 
 from url_scanner import scan_url_virustotal, defang_url
 
+# Common free webmail domains exploited for impersonation
+FREEMAIL_DOMAINS = {
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", 
+    "live.com", "icloud.com", "proton.me", "protonmail.com"
+}
+
+# High-value targets and authoritative brand keywords commonly abused
+TARGETED_ENTITIES = {
+    "bank", "anz", "asb", "westpac", "kiwibank", "paypal", "apple", 
+    "microsoft", "netflix", "security", "support", "billing", "fraud", 
+    "verification", "helpdesk", "account alert"
+}
+
+URGENCY_KEYWORDS = [
+    r"\burgent\b", r"\bsuspend(ed)?\b", r"\bexpire\b", r"\bimmediate(ly)?\b", 
+    r"\bverify your account\b", r"\b24 hours?\b", r"\bunauthorized\b", r"\baction required\b"
+]
+
 
 def parse_authentication_results(auth_header: str) -> dict[str, str]:
     """Extract SPF, DKIM, and DMARC verdicts from Authentication-Results header."""
@@ -22,18 +43,14 @@ def parse_authentication_results(auth_header: str) -> dict[str, str]:
         return auth_summary
 
     header_lower = auth_header.lower()
-
-    # Match SPF verdict
     spf_match = re.search(r"spf=(pass|fail|softfail|neutral|none)", header_lower)
     if spf_match:
         auth_summary["spf"] = spf_match.group(1)
 
-    # Match DKIM verdict
     dkim_match = re.search(r"dkim=(pass|fail|neutral|none)", header_lower)
     if dkim_match:
         auth_summary["dkim"] = dkim_match.group(1)
 
-    # Match DMARC verdict
     dmarc_match = re.search(r"dmarc=(pass|fail|none)", header_lower)
     if dmarc_match:
         auth_summary["dmarc"] = dmarc_match.group(1)
@@ -41,12 +58,54 @@ def parse_authentication_results(auth_header: str) -> dict[str, str]:
     return auth_summary
 
 
+def detect_impersonation_heuristics(sender_raw: str, subject: str, body_text: str) -> list[str]:
+    """Flag brand impersonation attempts where attackers use freemail or urgency lures."""
+    alerts = []
+    sender_raw_lower = sender_raw.lower()
+    subject_lower = subject.lower()
+    body_lower = body_text.lower()
+
+    # Extract email domain
+    sender_emails = re.findall(r"[\w\.-]+@([\w\.-]+)", sender_raw_lower)
+    sender_domain = sender_emails[0] if sender_emails else ""
+
+    # Check for freemail impersonating high-trust entities
+    if sender_domain in FREEMAIL_DOMAINS:
+        matched_brands = [brand for brand in TARGETED_ENTITIES if brand in sender_raw_lower or brand in subject_lower]
+        if matched_brands:
+            alerts.append(
+                f"High-Risk Impersonation: Freemail address (@{sender_domain}) used with authoritative brand keywords: {', '.join(matched_brands)}"
+            )
+
+    # Check for social engineering urgency patterns
+    matched_urgency = [kw for kw in URGENCY_KEYWORDS if re.search(kw, subject_lower) or re.search(kw, body_lower)]
+    if matched_urgency:
+        alerts.append("Social Engineering Lure: Urgent or coercive language detected in subject or email body")
+
+    return alerts
+
+
+def check_subdomain_deception(url: str) -> list[str]:
+    """Detect phishing URLs designed to mimic authentic brands via subdomains."""
+    warnings = []
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+
+    for brand in ["anz", "asb", "westpac", "paypal", "apple", "google", "microsoft"]:
+        # If brand appears in subdomains but root domain belongs elsewhere
+        if brand in hostname:
+            parts = hostname.split(".")
+            root_domain = ".".join(parts[-2:]) if len(parts) >= 2 else hostname
+            if brand not in root_domain:
+                warnings.append(f"Subdomain Deception: Brand '{brand}' found in subdomain, actual destination is '{root_domain}'")
+
+    return warnings
+
+
 def extract_urls_from_body(body_text: str) -> list[str]:
-    """Extract all embedded HTTP/HTTPS URLs from raw email body content."""
+    """Extract and deduplicate all HTTP/HTTPS links found within body text."""
     url_pattern = r'https?://[^\s<>"\')]+'
     found_urls = re.findall(url_pattern, body_text)
-
-    # Deduplicate while preserving order and clean trailing punctuation
     cleaned_urls = []
     seen = set()
     for u in found_urls:
@@ -58,7 +117,7 @@ def extract_urls_from_body(body_text: str) -> list[str]:
 
 
 def inspect_email_file(eml_path: str, scan_links: bool = False) -> dict[str, Any]:
-    """Parse raw .eml file and perform preliminary phishing triage."""
+    """Parse raw .eml file and perform multi-vector phishing triage."""
     with open(eml_path, "rb") as f:
         msg = BytesParser(policy=policy.default).parse(f)
 
@@ -68,7 +127,7 @@ def inspect_email_file(eml_path: str, scan_links: bool = False) -> dict[str, Any
     reply_to = msg.get("Reply-To", "")
     auth_header = msg.get("Authentication-Results", "")
 
-    # Extract plain text or html payload
+    # Extract body content
     body_content = ""
     if msg.is_multipart():
         for part in msg.walk():
@@ -79,35 +138,41 @@ def inspect_email_file(eml_path: str, scan_links: bool = False) -> dict[str, Any
     else:
         body_content = msg.get_payload(decode=True).decode(errors="replace")
 
-    # 1. Evaluate Authentication Telemetry
+    # 1. Technical Authentication
     auth_verdict = parse_authentication_results(auth_header)
 
-    # 2. Check for sender address discrepancy (Mismatched Sender)
+    # 2. Sender Domain Discrepancies
     sender_flags = []
-    sender_emails = re.findall(r"[\w\.-]+@[\w\.-]+", sender)
-    return_emails = re.findall(r"[\w\.-]+@[\w\.-]+", return_path)
+    sender_emails = re.findall(r"[\w\.-]+@([\w\.-]+)", sender.lower())
+    return_emails = re.findall(r"[\w\.-]+@([\w\.-]+)", return_path.lower())
+    if sender_emails and return_emails and sender_emails[0] != return_emails[0]:
+        sender_flags.append(f"Header Mismatch: Sender '@{sender_emails[0]}' differs from Return-Path '@{return_emails[0]}'")
 
-    if sender_emails and return_emails:
-        sender_domain = sender_emails[0].split("@")[-1].lower()
-        return_domain = return_emails[0].split("@")[-1].lower()
-        if sender_domain != return_domain:
-            sender_flags.append(f"Domain mismatch: Sender '@{sender_domain}' vs Return-Path '@{return_domain}'")
+    # 3. Impersonation & Social Engineering Heuristics
+    impersonation_alerts = detect_impersonation_heuristics(sender, subject, body_content)
 
-    # 3. Extract Embedded URLs
+    # 4. URL Harvesting & Subdomain Checks
     extracted_urls = extract_urls_from_body(body_content)
+    url_deception_flags = []
+    for u in extracted_urls:
+        url_deception_flags.extend(check_subdomain_deception(u))
 
-    # 4. Optional: Scan extracted URLs via VirusTotal pipeline
+    # 5. Optional Threat Intelligence Lookup
     url_scan_results = []
     if scan_links and extracted_urls:
-        for target_link in extracted_urls[:3]:  # Limit top 3 URLs to respect rate limits
+        for target_link in extracted_urls[:3]:
             url_scan_results.append(scan_url_virustotal(target_link))
 
-    # Determine Phishing Indicator Severity
-    is_spoofed = (auth_verdict["spf"] == "fail") or (auth_verdict["dmarc"] == "fail")
+    # Determine Severity and Verdict
     has_malicious_link = any(r.get("verdict") == "MALICIOUS" for r in url_scan_results)
+    is_spoofed_auth = (auth_verdict["spf"] == "fail") or (auth_verdict["dmarc"] == "fail")
+    has_brand_impersonation = len(impersonation_alerts) > 0 or len(url_deception_flags) > 0
 
-    if is_spoofed or has_malicious_link:
+    if has_malicious_link or (has_brand_impersonation and is_spoofed_auth):
         verdict = "SUSPICIOUS_PHISHING"
+        severity = "CRITICAL"
+    elif has_brand_impersonation:
+        verdict = "SUSPICIOUS_IMPERSONATION"
         severity = "CRITICAL"
     elif sender_flags or auth_verdict["spf"] == "softfail":
         verdict = "POTENTIAL_SPOOF"
@@ -123,6 +188,8 @@ def inspect_email_file(eml_path: str, scan_links: bool = False) -> dict[str, Any
         "reply_to": reply_to,
         "authentication": auth_verdict,
         "sender_flags": sender_flags,
+        "impersonation_alerts": impersonation_alerts,
+        "url_deception_flags": url_deception_flags,
         "extracted_urls": [defang_url(u) for u in extracted_urls],
         "raw_urls": extracted_urls,
         "url_scans": url_scan_results,
