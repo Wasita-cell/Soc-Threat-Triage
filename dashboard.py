@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Unified SOC Analyst Investigation Dashboard
-Supports IP Threat Triage, URL Reputation Scanning, and Phishing Email (.eml) Analysis.
+Supports IP Threat Triage, URL Reputation Scanning, Phishing Email (.eml) Analysis,
+Automated Containment Rule Generation, and Tier-2 Incident Ticket Handover.
 """
 from __future__ import annotations
 
@@ -14,6 +15,12 @@ import streamlit as st
 from app import process_single_ip, parse_auth_log
 from url_scanner import scan_url_virustotal, defang_url
 from email_parser import inspect_email_file
+from containment import (
+    generate_ip_containment,
+    generate_domain_containment,
+    generate_email_containment
+)
+from report_generator import format_incident_ticket
 
 # ==========================================
 # Page Configuration
@@ -94,13 +101,40 @@ with tab_ip:
             df = pd.DataFrame(df_rows)
             st.dataframe(df, use_container_width=True)
 
-            # Detailed Expanders
-            st.markdown("### Detailed Investigation")
+            # Detailed Investigation & Containment Actions
+            st.markdown("### Detailed Investigation & Response")
             for record in triage_records:
                 ip_label = record.get("ip", "Unknown")
                 verdict_label = record.get("verdict", "N/A")
-                with st.expander(f"📍 Target: {ip_label} — Verdict: {verdict_label}"):
+                severity_label = record.get("severity", "LOW")
+
+                with st.expander(f"📍 Target: {ip_label} — Verdict: {verdict_label} ({severity_label})"):
                     st.json(record)
+
+                    # Containment & Escalation for Medium / Critical Threats
+                    if severity_label in ["CRITICAL", "MEDIUM"]:
+                        st.markdown("#### 🛑 Recommended Firewall Containment")
+                        containment_cmds = generate_ip_containment(ip_label)
+                        for env_name, cmd in containment_cmds.items():
+                            st.code(cmd, language="bash")
+
+                        # Generate Incident Handover Ticket
+                        ticket_md = format_incident_ticket(
+                            incident_type="IP Intelligence",
+                            target=ip_label,
+                            verdict=verdict_label,
+                            severity=severity_label,
+                            details=record,
+                            containment_actions=containment_cmds
+                        )
+                        st.markdown("#### 📋 Incident Handover Ticket (Tier-2 / IR)")
+                        st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220)
+                        st.download_button(
+                            label=f"📥 Download Ticket ({ip_label})",
+                            data=ticket_md,
+                            file_name=f"incident_ticket_{ip_label}.md",
+                            mime="text/markdown"
+                        )
 
 # ==========================================
 # TAB 2: URL Reputation Scanner
@@ -120,9 +154,12 @@ with tab_url:
             if "error" in scan_res:
                 st.error(scan_res["error"])
             else:
+                verdict_label = scan_res.get("verdict", "N/A")
+                severity_label = scan_res.get("severity", "LOW")
+
                 u1, u2, u3, u4 = st.columns(4)
-                u1.metric("Verdict", scan_res.get("verdict", "N/A"))
-                u2.metric("Severity", scan_res.get("severity", "N/A"))
+                u1.metric("Verdict", verdict_label)
+                u2.metric("Severity", severity_label)
                 stats = scan_res.get("stats", {})
                 u3.metric("Malicious Flags", stats.get("malicious", 0))
                 u4.metric("Harmless Votes", stats.get("harmless", 0))
@@ -136,6 +173,31 @@ with tab_url:
                         st.markdown(f"- {h}")
                 else:
                     st.success("No suspicious URL heuristic patterns detected.")
+
+                # Containment & Incident Ticket
+                if severity_label in ["CRITICAL", "MEDIUM"]:
+                    st.markdown("---")
+                    st.markdown("### 🛑 Recommended Domain Sinkhole / Containment")
+                    containment_cmds = generate_domain_containment(target_url.strip())
+                    for env_name, cmd in containment_cmds.items():
+                        st.code(cmd, language="bash")
+
+                    ticket_md = format_incident_ticket(
+                        incident_type="URL Investigation",
+                        target=scan_res.get("defanged_url", target_url),
+                        verdict=verdict_label,
+                        severity=severity_label,
+                        details=scan_res,
+                        containment_actions=containment_cmds
+                    )
+                    st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
+                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220)
+                    st.download_button(
+                        label="📥 Download URL Incident Ticket",
+                        data=ticket_md,
+                        file_name="incident_ticket_url.md",
+                        mime="text/markdown"
+                    )
 
                 with st.expander("View Raw Scanner Telemetry"):
                     st.json(scan_res)
@@ -163,9 +225,12 @@ with tab_email:
                 with st.spinner("Extracting email headers, authentication tags, and embedded links..."):
                     email_report = inspect_email_file(tmp_path, scan_links=scan_embedded_links)
 
+                verdict_label = email_report.get("verdict", "N/A")
+                severity_label = email_report.get("severity", "LOW")
+
                 e1, e2, e3 = st.columns(3)
-                e1.metric("Verdict", email_report.get("verdict"))
-                e2.metric("Severity", email_report.get("severity"))
+                e1.metric("Verdict", verdict_label)
+                e2.metric("Severity", severity_label)
                 e3.metric("Extracted URLs", len(email_report.get("raw_urls", [])))
 
                 st.markdown("### Header & Sender Intelligence")
@@ -206,6 +271,34 @@ with tab_email:
                         st.code(u, language="text")
                 else:
                     st.info("No external links found in email body.")
+
+                # Containment & Incident Ticket
+                if severity_label in ["CRITICAL", "MEDIUM"]:
+                    st.markdown("---")
+                    st.markdown("### 🛑 Recommended Email & Tenant Containment")
+                    sender_clean = email_report.get("from", "")
+                    subject_clean = email_report.get("subject", "")
+                    containment_cmds = generate_email_containment(sender_clean, subject_clean)
+                    for env_name, cmd in containment_cmds.items():
+                        st.markdown(f"**{env_name}:**")
+                        st.code(cmd, language="powershell")
+
+                    ticket_md = format_incident_ticket(
+                        incident_type="Phishing Email Artifact",
+                        target=f"{email_report.get('from')} - Subject: {email_report.get('subject')}",
+                        verdict=verdict_label,
+                        severity=severity_label,
+                        details=email_report,
+                        containment_actions=containment_cmds
+                    )
+                    st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
+                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=240)
+                    st.download_button(
+                        label="📥 Download Phishing Incident Ticket",
+                        data=ticket_md,
+                        file_name="incident_ticket_phishing.md",
+                        mime="text/markdown"
+                    )
 
                 with st.expander("View Full Email Analysis JSON"):
                     st.json(email_report)
