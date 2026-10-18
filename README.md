@@ -92,3 +92,38 @@ SQLite Caching (24h TTL)    Subdomain Deception Check                    │
          ├── .gitignore              # Exclusion list for credentials, databases, and logs
          └── README.md               # Documentation and technical architecture
 
+🚀 Installation & Setup
+1. Clone the Repository
+    Bash
+       git clone [https://github.com/](https://github.com/)<your-username>/Soc-Threat-Triage.git
+       cd Soc-Threat-Triage
+2. Configure Virtual Environment
+    Bash
+       python3 -m venv .venv
+       source .venv/bin/activate
+       pip install -r requirements.txt
+3. Set Up Environment Variables
+Create a .env file in the project root:
+    Bash
+       ABUSEIPDB_API_KEY=your_abuseipdb_api_key_here
+       VIRUSTOTAL_API_KEY=your_virustotal_api_key_here
+       GEMINI_API_KEY=your_gemini_api_key_here
+       DISCORD_WEBHOOK_URL=your_discord_webhook_url_here
+4. Launch the Dashboard
+    Bash
+       streamlit run dashboard.py
+
+Access the interactive dashboard in your browser at http://localhost:8501 (or http://localhost:8503).
+
+🔒 Security & Privacy Notice
+       - All sensitive credentials and API tokens are managed via .env and strictly excluded from version control via .gitignore.
+       - Sample artifacts and telemetry used during testing consist of synthetic and sanitized data.
+
+Steps to Save and Push to GitHub
+       1.Paste the content into the README.md file in VS Code and press Cmd + S to save.
+       2.Switch to the TERMINAL tab and run these commands:
+
+    Bash
+       git add README.md
+       git commit -m "docs: complete comprehensive SOC toolkit documentation and unified architecture diagram"
+       git push origin main
