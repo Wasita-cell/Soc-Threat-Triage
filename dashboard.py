@@ -1,138 +1,201 @@
+#!/usr/bin/env python3
+"""
+Unified SOC Analyst Investigation Dashboard
+Supports IP Threat Triage, URL Reputation Scanning, and Phishing Email (.eml) Analysis.
+"""
+from __future__ import annotations
+
 import os
 import json
-import streamlit as st
+import tempfile
 import pandas as pd
-from dotenv import load_dotenv
-from app import process_single_ip
+import streamlit as st
 
-# Load environment variables
-load_dotenv()
+from app import process_single_ip, parse_auth_log
+from url_scanner import scan_url_virustotal, defang_url
+from email_parser import inspect_email_file
 
-# Page configuration
+# ==========================================
+# Page Configuration
+# ==========================================
 st.set_page_config(
-    page_title="SOC Threat Triage Dashboard",
+    page_title="SOC Analyst Investigation Toolkit",
     page_icon="🛡️",
     layout="wide"
 )
 
-# Main Title & Subtitle
-st.title("🛡️ SOC Threat Triage Dashboard")
-st.markdown("Automated IP threat intelligence aggregation powered by **AbuseIPDB**, **VirusTotal**, and **Gemini AI**.")
+st.title("🛡️ SOC Analyst Investigation & Triage Toolkit")
+st.caption("Automated Tier-1 triage pipeline for network logs, IP reputation, suspicious URLs, and phishing artifacts.")
 
 # Sidebar Configuration
 with st.sidebar:
     st.header("⚙️ Configuration")
-    use_ai = st.checkbox("Enable AI Enrichment (Gemini)", value=False)
-    st.markdown("---")
-    st.info("Automated Discord alerts will be dispatched upon detecting **CRITICAL** severity threats.")
+    enable_ai = st.checkbox("Enable AI Enrichment (Gemini)", value=False)
+    st.info("Automated Webhook alerts dispatch when CRITICAL severity threats are triaged.")
 
-# Input Mode Selection
-input_mode = st.radio(
-    "Select Input Mode:",
-    ["Manual IP Input", "📂 Upload Log File (auth.log)"],
-    horizontal=True
-)
+# Tabbed Workspace
+tab_ip, tab_url, tab_email = st.tabs([
+    "🌐 IP Threat Intelligence",
+    "🔗 URL Reputation Scanner",
+    "📧 Phishing Email Analyzer"
+])
 
-ip_list = []
-if input_mode == "Manual IP Input":
-    raw_input = st.text_area(
-        "Enter IP addresses to investigate (one per line):",
-        value="185.220.101.5\n8.8.8.8\n192.168.1.1\n999.999.1.1",
-        height=120
-    )
-    if raw_input:
-        ip_list = [line.strip() for line in raw_input.replace(",", "\n").splitlines() if line.strip()]
-else:
-    uploaded_file = st.file_uploader("Drag and drop server authentication log here:", type=["log", "txt"])
-    threshold = st.slider("Detection Threshold (Minimum Failed Attempts)", min_value=1, max_value=10, value=2)
-    if uploaded_file is not None:
-        log_text = uploaded_file.read().decode("utf-8")
-        from app import parse_auth_log
-        ip_list = parse_auth_log(log_text, threshold=threshold)
-        st.info(f"🔎 Detected {len(ip_list)} suspicious IP(s) exceeding {threshold} failed attempts: {', '.join(ip_list)}")
+# ==========================================
+# TAB 1: IP Threat Intelligence
+# ==========================================
+with tab_ip:
+    st.subheader("IP Telemetry & Authentication Log Triage")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        single_ip_input = st.text_input("Investigate Target IP Address", placeholder="e.g., 185.220.101.5")
+    with col2:
+        log_file = st.file_uploader("Upload Linux Auth Log (auth.log)", type=["log", "txt"])
 
-# Execution Button
-if st.button("🚀 Start Triage & Analysis", type="primary"):
-    if not ip_list:
-        st.warning("Please provide target IPs or upload a valid log file before initiating analysis.")
-    else:
-        results = []
-        progress_bar = st.progress(0)
+    run_ip_triage = st.button("Run IP Triage", type="primary")
 
-        # Process IPs with automated MITRE mapping for log-derived entries
-        for idx, target_ip in enumerate(ip_list):
-            res = process_single_ip(target_ip, use_ai=use_ai)
+    if run_ip_triage:
+        targets = []
+        if log_file:
+            log_data = log_file.read().decode("utf-8", errors="replace")
+            parsed_ips = parse_auth_log(log_data)
+            st.write(f"Parsed **{len(parsed_ips)}** suspicious IP(s) exceeding brute-force threshold from log.")
+            targets.extend(parsed_ips)
+        elif single_ip_input:
+            targets.append(single_ip_input.strip())
 
-            if input_mode != "Manual IP Input":
-                mitre_list = res.get("mitre_attack", [])
-                if not any(m.get("id") == "T1110" for m in mitre_list):
-                    mitre_list.append({"id": "T1110", "name": "Brute Force"})
-                res["mitre_attack"] = mitre_list
+        if not targets:
+            st.warning("Please enter an IP address or upload an authentication log file.")
+        else:
+            with st.spinner("Triaging targets against local cache and threat intelligence feeds..."):
+                triage_records = [process_single_ip(target, use_ai=enable_ai) for target in targets]
 
-            results.append(res)
-            progress_bar.progress((idx + 1) / len(ip_list))
+            # Metric Summary Cards
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Critical Threats", sum(1 for r in triage_records if r.get("severity") == "CRITICAL"))
+            c2.metric("Suspicious", sum(1 for r in triage_records if r.get("severity") == "MEDIUM"))
+            c3.metric("Safe / Internal", sum(1 for r in triage_records if r.get("severity") in ["LOW", "INFO"]))
+            c4.metric("Format Errors", sum(1 for r in triage_records if r.get("verdict") == "ERROR"))
 
-        st.success(f"Triage completed for {len(ip_list)} target(s)!")
+            # Summary Table
+            st.markdown("### Triage Summary")
+            df_rows = []
+            for r in triage_records:
+                mitre_list = [f"{m['id']} - {m['name']}" for m in r.get("mitre_attack", [])]
+                df_rows.append({
+                    "Target IP": r.get("ip"),
+                    "Source": "⚡ Cached (Local DB)" if r.get("cached") else "🌐 Live API",
+                    "Verdict": r.get("verdict"),
+                    "Severity": r.get("severity"),
+                    "Confidence": f"{int(r.get('confidence', 0) * 100)}%" if "confidence" in r else "N/A",
+                    "MITRE ATT&CK": ", ".join(mitre_list) if mitre_list else "None",
+                    "Reasoning": r.get("reasoning", "N/A")
+                })
+            df = pd.DataFrame(df_rows)
+            st.dataframe(df, use_container_width=True)
 
-        # High-level Metrics Summary
-        col1, col2, col3, col4 = st.columns(4)
-        critical_count = sum(1 for r in results if r.get("severity") == "CRITICAL")
-        suspicious_count = sum(1 for r in results if r.get("severity") == "SUSPICIOUS")
-        safe_count = sum(1 for r in results if r.get("verdict") in ["BENIGN", "INTERNAL_IP"])
-        error_count = sum(1 for r in results if r.get("verdict") == "ERROR")
+            # Detailed Expanders
+            st.markdown("### Detailed Investigation")
+            for record in triage_records:
+                ip_label = record.get("ip", "Unknown")
+                verdict_label = record.get("verdict", "N/A")
+                with st.expander(f"📍 Target: {ip_label} — Verdict: {verdict_label}"):
+                    st.json(record)
 
-        col1.metric("🔴 Critical Threats", critical_count)
-        col2.metric("🟠 Suspicious", suspicious_count)
-        col3.metric("🟢 Safe / Internal", safe_count)
-        col4.metric("⚠️ Format Errors", error_count)
+# ==========================================
+# TAB 2: URL Reputation Scanner
+# ==========================================
+with tab_url:
+    st.subheader("URL Heuristics & Reputation Lookup")
+    target_url = st.text_input("Target URL to Investigate", placeholder="https://example-phish-domain.com/login")
+    run_url_scan = st.button("Scan URL", type="primary")
 
-        # Tabular Triage Summary
-        st.markdown("### 📋 Triage Summary")
-        table_data = []
-        for r in results:
-            source_badge = "⚡ Cached (Local DB)" if r.get("cached") else "🌐 Live API"
-            mitre_tags = ", ".join([f"{m['id']} ({m['name']})" for m in r.get("mitre_attack", [])]) if r.get("mitre_attack") else "None"
-            confidence_val = f"{int(r.get('confidence', 0) * 100)}%" if r.get("confidence") is not None else "N/A"
+    if run_url_scan:
+        if not target_url:
+            st.warning("Please provide a valid URL to analyze.")
+        else:
+            with st.spinner("Querying VirusTotal and evaluating URL heuristics..."):
+                scan_res = scan_url_virustotal(target_url.strip())
 
-            table_data.append({
-                "Target IP": r.get("ip"),
-                "Source": source_badge,
-                "Verdict": r.get("verdict"),
-                "Severity": r.get("severity"),
-                "Confidence": confidence_val,
-                "MITRE ATT&CK": mitre_tags,
-                "Reasoning": r.get("incident_note", "").split("\n")[0]
-            })
+            if "error" in scan_res:
+                st.error(scan_res["error"])
+            else:
+                u1, u2, u3, u4 = st.columns(4)
+                u1.metric("Verdict", scan_res.get("verdict", "N/A"))
+                u2.metric("Severity", scan_res.get("severity", "N/A"))
+                stats = scan_res.get("stats", {})
+                u3.metric("Malicious Flags", stats.get("malicious", 0))
+                u4.metric("Harmless Votes", stats.get("harmless", 0))
 
-        st.dataframe(pd.DataFrame(table_data), use_container_width=True)
+                st.markdown(f"**Defanged IOC:** `{scan_res.get('defanged_url')}`")
 
-        # Export Options
-        st.write("")
-        exp_col1, exp_col2, _ = st.columns([1, 1, 2])
-        
-        df_export = pd.DataFrame(table_data)
-        csv_data = df_export.to_csv(index=False).encode("utf-8")
-        exp_col1.download_button(
-            label="📥 Export Report (CSV)",
-            data=csv_data,
-            file_name="soc_triage_report.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+                heuristics = scan_res.get("heuristics", [])
+                if heuristics:
+                    st.warning("⚠️ **Heuristic Alerts Detected:**")
+                    for h in heuristics:
+                        st.markdown(f"- {h}")
+                else:
+                    st.success("No suspicious URL heuristic patterns detected.")
 
-        json_data = json.dumps(results, indent=2, ensure_ascii=False)
-        exp_col2.download_button(
-            label="📥 Export Raw JSON",
-            data=json_data,
-            file_name="soc_triage_report.json",
-            mime="application/json",
-            use_container_width=True
-        )
+                with st.expander("View Raw Scanner Telemetry"):
+                    st.json(scan_res)
 
-        # Detailed Investigation Dropdowns
-        st.markdown("### 🔍 Detailed Investigation")
-        for r in results:
-            ip_label = r.get("ip", "Unknown")
-            verdict_label = r.get("verdict", "UNKNOWN")
-            with st.expander(f"📌 IP: {ip_label} — Verdict: {verdict_label}"):
-                st.json(r)
+# ==========================================
+# TAB 3: Phishing Email Analyzer
+# ==========================================
+with tab_email:
+    st.subheader("Phishing Email (.eml) Artifact Parser")
+    st.caption("Upload suspect .eml files to extract authentication results, detect sender spoofing, and harvest embedded links.")
+
+    eml_file = st.file_uploader("Upload Raw Email File (.eml)", type=["eml"])
+    scan_embedded_links = st.checkbox("Automatically scan extracted URLs via VirusTotal (Respects API Limits)", value=False)
+    run_email_analysis = st.button("Analyze Email", type="primary")
+
+    if run_email_analysis:
+        if not eml_file:
+            st.warning("Please upload a .eml file to proceed.")
+        else:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".eml") as tmp:
+                tmp.write(eml_file.read())
+                tmp_path = tmp.name
+
+            try:
+                with st.spinner("Extracting email headers, authentication tags, and embedded links..."):
+                    email_report = inspect_email_file(tmp_path, scan_links=scan_embedded_links)
+
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Verdict", email_report.get("verdict"))
+                e2.metric("Severity", email_report.get("severity"))
+                e3.metric("Extracted URLs", len(email_report.get("raw_urls", [])))
+
+                st.markdown("### Header & Sender Intelligence")
+                st.markdown(f"- **Subject:** `{email_report.get('subject')}`")
+                st.markdown(f"- **Display From:** `{email_report.get('from')}`")
+                st.markdown(f"- **Return-Path:** `{email_report.get('return_path')}`")
+
+                auth = email_report.get("authentication", {})
+                a1, a2, a3 = st.columns(3)
+                a1.markdown(f"**SPF:** `{auth.get('spf')}`")
+                a2.markdown(f"**DKIM:** `{auth.get('dkim')}`")
+                a3.markdown(f"**DMARC:** `{auth.get('dmarc')}`")
+
+                sender_flags = email_report.get("sender_flags", [])
+                if sender_flags:
+                    st.error("🚨 **Sender Discrepancy Alerts:**")
+                    for flag in sender_flags:
+                        st.markdown(f"- {flag}")
+
+                st.markdown("### Harvested Link IOCs (Defanged)")
+                extracted_urls = email_report.get("extracted_urls", [])
+                if extracted_urls:
+                    for u in extracted_urls:
+                        st.code(u, language="text")
+                else:
+                    st.info("No external links found in email body.")
+
+                with st.expander("View Full Email Analysis JSON"):
+                    st.json(email_report)
+
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
