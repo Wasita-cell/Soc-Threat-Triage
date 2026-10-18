@@ -4,31 +4,34 @@ Automated IP Threat Triage & AI Enrichment Pipeline
 Usage:
     python3 app.py <TARGET_IP>
     python3 app.py <TARGET_IP> --ai
+    python3 app.py -f <IP_LIST_FILE> -o <OUTPUT_JSON>
 """
 from __future__ import annotations
 
 import os
 import sys
+import re
 import json
 import time
 import argparse
 import sqlite3
-from datetime import datetime, timezone
-import requests
 import ipaddress
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
+import requests
 
-# พยายามนำเข้า google-genai สำหรับฟังก์ชัน AI
+# Optional import for Gemini AI enrichment
 try:
     from google import genai
 except ImportError:
     genai = None
 
 # ==========================================
-# 1. โหลด API KEYS จากไฟล์ .env หรือระบบเครื่อง
+# 1. Environment Configuration & API Keys
 # ==========================================
 def load_dotenv_file(filepath: str = ".env") -> None:
-    """อ่านค่าจากไฟล์ .env เข้าสู่ Environment โดยไม่ต้องติดตั้งไลบรารีเสริม"""
+    """Load environment variables from a local .env file without external dependencies."""
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filepath)
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:
@@ -40,16 +43,18 @@ def load_dotenv_file(filepath: str = ".env") -> None:
 
 load_dotenv_file()
 
-ABUSEIPDB_API_KEY = "0bf8b76a3a06665b2ec2c51af73a7cf8fd2046892198ba34dd2fd1168817c98a2229a5502656ae47"
+ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
-# ตารางจับคู่รหัสหมวดหมู่ของ AbuseIPDB ให้เป็นข้อความเข้าใจง่าย
+
+# AbuseIPDB category ID to human-readable label mapping
 ABUSE_CATEGORIES = {
     3: "fraud_voip", 4: "ddos", 9: "open_proxy", 10: "web_spam",
     11: "email_spam", 14: "port_scan", 15: "hacking", 18: "brute_force",
     19: "bad_bot", 20: "exploited_host", 21: "web_attack", 22: "ssh", 23: "iot"
 }
-# แผนผังจับคู่พฤติกรรมเข้ากับ MITRE ATT&CK Enterprise Framework
+
+# Map observed behaviors to MITRE ATT&CK Enterprise Framework
 MITRE_ATTACK_MAPPING = {
     "port_scan": {"id": "T1046", "name": "Network Service Discovery", "tactic": "Discovery"},
     "brute_force": {"id": "T1110", "name": "Brute Force", "tactic": "Credential Access"},
@@ -77,12 +82,12 @@ Return ONLY a valid JSON object with keys:
 Do not use markdown blocks (```json). Return raw JSON only."""
 
 # ==========================================
-# ระบบจัดการฐานข้อมูลแคช (SQLite Cache)
+# Local SQLite Cache Layer
 # ==========================================
 DB_FILE = "triage_cache.db"
 
 def init_db() -> None:
-    """สร้างตารางเก็บประวัติและแคชหากยังไม่มี"""
+    """Initialize the local SQLite cache table schema if it does not exist."""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -95,7 +100,7 @@ def init_db() -> None:
         conn.commit()
 
 def get_cached_result(ip: str, max_age_hours: int = 24) -> dict[str, Any] | None:
-    """ดึงข้อมูลจากแคชถ้ายังไม่หมดอายุ (ค่าเริ่มต้น 24 ชั่วโมง)"""
+    """Retrieve cached triage result if within the TTL window (default: 24 hours)."""
     init_db()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
@@ -108,16 +113,16 @@ def get_cached_result(ip: str, max_age_hours: int = 24) -> dict[str, Any] | None
         updated_at = datetime.fromisoformat(updated_at_str)
         now = datetime.now(timezone.utc)
 
-        # ตรวจสอบอายุข้อมูล
+        # Validate cache record freshness against TTL
         if (now - updated_at).total_seconds() > (max_age_hours * 3600):
-            return None  # แคชหมดอายุ ต้องดึงใหม่
+            return None  # Stale record; query upstream APIs
 
         data = json.loads(result_json)
-        data["cached"] = True  # ทำเครื่องหมายว่ามาจากแคช
+        data["cached"] = True
         return data
 
 def save_to_cache(ip: str, result: dict[str, Any]) -> None:
-    """บันทึกหรืออัปเดตผลการวิเคราะห์ลงฐานข้อมูล"""
+    """Save or update triage assessment in the local SQLite database."""
     init_db()
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
@@ -129,10 +134,11 @@ def save_to_cache(ip: str, result: dict[str, Any]) -> None:
         conn.commit()
 
 # ==========================================
-# 2. ฟังก์ชันดึงข้อมูลสดจาก AbuseIPDB
+# 2. Threat Intelligence Telemetry Fetchers
 # ==========================================
 def fetch_abuseipdb(ip: str) -> dict[str, Any]:
-    url = "https://api.abuseipdb.com/api/v2/check"
+    """Query AbuseIPDB API v2 for IP reputation telemetry and historical reports."""
+    url = "[https://api.abuseipdb.com/api/v2/check](https://api.abuseipdb.com/api/v2/check)"
     params = {"ipAddress": ip, "maxAgeInDays": "90", "verbose": True}
     headers = {"Accept": "application/json", "Key": ABUSEIPDB_API_KEY}
 
@@ -142,14 +148,14 @@ def fetch_abuseipdb(ip: str) -> dict[str, Any]:
 
     raw = response.json().get("data", {})
     
-    # สกัด categories จากรายงานย้อนหลัง
+    # Extract unique categories from historical reports
     extracted_categories = set()
     for report in raw.get("reports", []):
         for cat_id in report.get("categories", []):
             if cat_id in ABUSE_CATEGORIES:
                 extracted_categories.add(ABUSE_CATEGORIES[cat_id])
 
-    # แปลงโครงสร้างให้ตรงกับที่ Triage Engine ต้องการ
+    # Normalize payload structure for the triage engine
     return {
         "ip": raw.get("ipAddress", ip),
         "abuse_score": raw.get("abuseConfidenceScore", 0),
@@ -161,15 +167,12 @@ def fetch_abuseipdb(ip: str) -> dict[str, Any]:
         "hosting_provider": raw.get("usageType"),
     }
 
-# ==========================================
-# ฟังก์ชันดึงข้อมูลจาก VirusTotal API v3
-# ==========================================
 def fetch_virustotal(ip: str) -> dict[str, Any]:
-    """ดึงข้อมูลการวิเคราะห์ IP จาก VirusTotal"""
+    """Retrieve reputation and vendor detection stats from VirusTotal API v3."""
     if not VIRUSTOTAL_API_KEY:
         return {"error": "Missing VIRUSTOTAL_API_KEY"}
 
-    url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
+    url = f"[https://www.virustotal.com/api/v3/ip_addresses/](https://www.virustotal.com/api/v3/ip_addresses/){ip}"
     headers = {
         "x-apikey": VIRUSTOTAL_API_KEY,
         "Accept": "application/json"
@@ -192,12 +195,12 @@ def fetch_virustotal(ip: str) -> dict[str, Any]:
             return {"error": f"VirusTotal error code: {resp.status_code}"}
     except Exception as exc:
         return {"error": f"VirusTotal connection error: {str(exc)}"}
-    
+
 # ==========================================
-# 3. Triage Engine (ตรรกะความปลอดภัยชี้ขาด)
+# 3. Triage Engine (Deterministic Logic)
 # ==========================================
 def analyze(evidence: dict[str, Any], vt_evidence: dict[str, Any] = None) -> dict[str, Any]:
-    # (ตรรกะเดิมสำหรับเช็ก TRUSTED_IPS ยังคงไว้ตามปกติ)
+    """Perform rule-based triage assessment correlating multi-source threat intelligence."""
     ip = evidence.get("ipAddress") or evidence.get("ip") or "unknown"
     if ip in TRUSTED_IPS:
         return {
@@ -216,12 +219,11 @@ def analyze(evidence: dict[str, Any], vt_evidence: dict[str, Any] = None) -> dic
     country = evidence.get("countryCode", "Unknown")
     isp = evidence.get("isp", "Unknown")
 
-    # ดึงค่าจาก VirusTotal
     vt_malicious = 0
     if vt_evidence and "malicious" in vt_evidence:
         vt_malicious = vt_evidence.get("malicious", 0)
 
-    # เงื่อนไขการตัดสินระดับวิกฤต: พิจารณาจาก AbuseIPDB หรือ VirusTotal โหวตอันตราย
+    # Critical severity threshold
     is_critical = (abuse_score >= 80) or is_tor or (vt_malicious >= 5)
 
     if is_critical:
@@ -243,7 +245,7 @@ def analyze(evidence: dict[str, Any], vt_evidence: dict[str, Any] = None) -> dic
         confidence = 0.80
         actions = ["No immediate action needed."]
 
-    # สร้างข้อความ Reasoning แบบผสาน 2 แหล่ง
+    # Synthesize multi-source reasoning summary
     reason_parts = [
         f"Country {country}",
         f"ISP {isp}",
@@ -255,13 +257,12 @@ def analyze(evidence: dict[str, Any], vt_evidence: dict[str, Any] = None) -> dic
         elif "error" in vt_evidence:
             reason_parts.append(f"VirusTotal: {vt_evidence['error']}")
 
-# ดึงหมวดหมู่ที่รายงานจาก AbuseIPDB
     reported_cat_ids = set()
     for rep in evidence.get("reports", []):
         for cid in rep.get("categories", []):
             reported_cat_ids.add(cid)
 
-    # จับคู่เข้ากับ MITRE ATT&CK
+    # Map observed behaviors to MITRE ATT&CK techniques
     mitre_techniques = []
     seen_ids = set()
     for cid in reported_cat_ids:
@@ -272,20 +273,21 @@ def analyze(evidence: dict[str, Any], vt_evidence: dict[str, Any] = None) -> dic
                 mitre_techniques.append(technique)
                 seen_ids.add(technique["id"])
 
-    # ถ้าเป็น Tor Node ให้เพิ่ม T1090.003 เข้าไปด้วย
+    # Append Tor proxy technique if applicable
     if is_tor:
         mitre_techniques.append({
             "id": "T1090.003",
             "name": "Proxy: Multi-hop Proxy (Tor)",
             "tactic": "Command and Control"
         })
+
     return {
         "ip": ip,
         "verdict": verdict,
         "severity": severity,
         "reasoning": "; ".join(reason_parts) + ".",
         "recommended_action": actions,
-        "mitre_attack": mitre_techniques,  # <--- เพิ่มบรรทัดนี้
+        "mitre_attack": mitre_techniques,
         "incident_note": f"Target: {ip} ({isp})\nEvidence: Score {abuse_score}%, VT Flags: {vt_malicious}\nVerdict: {verdict} / Severity: {severity}",
         "confidence": confidence,
         "automation": {
@@ -294,15 +296,15 @@ def analyze(evidence: dict[str, Any], vt_evidence: dict[str, Any] = None) -> dic
         }
     }
 
-
 # ==========================================
-# 4. ฟังก์ชัน AI สรุปบริบท (Gemini API)
+# 4. Contextual AI Enrichment (Gemini API)
 # ==========================================
 def enrich_with_gemini(result: dict[str, Any], raw_data: dict[str, Any]) -> dict[str, Any]:
+    """Enrich triage assessment with contextual analysis using Gemini AI."""
     if not genai:
         print("[!] Warning: google-genai not installed. Skipping AI.", file=sys.stderr)
         return result
-    if not GEMINI_API_KEY or "ใส่_" in GEMINI_API_KEY:
+    if not GEMINI_API_KEY:
         print("[!] Warning: GEMINI_API_KEY missing. Skipping AI.", file=sys.stderr)
         return result
 
@@ -314,11 +316,11 @@ def enrich_with_gemini(result: dict[str, Any], raw_data: dict[str, Any]) -> dict
             f"Rule Assessment: {json.dumps(result)}"
         )
         response = client.models.generate_content(
-            model="gemini-3.8-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
 
-        # คลีนผลลัพธ์และแปลงเป็น JSON
+        # Clean Markdown code blocks and parse raw JSON response
         raw_text = response.text.strip()
         if raw_text.startswith("```json"):
             raw_text = raw_text[7:]
@@ -337,24 +339,23 @@ def enrich_with_gemini(result: dict[str, Any], raw_data: dict[str, Any]) -> dict
     return result
 
 # ==========================================
-# ฟังก์ชันส่งแจ้งเตือนผ่าน Webhook
+# 5. Alerting & Incident Notification
 # ==========================================
 def send_alert_webhook(incident_data: dict[str, Any], webhook_url: str) -> None:
-    """ส่งแจ้งเตือนเข้า Webhook เมื่อพบเคสระดับวิกฤต"""
+    """Dispatch high-priority incident cards to a webhook endpoint (e.g., Discord)."""
     if not webhook_url:
         return
 
-    # จัดรูปแบบการ์ดแจ้งเตือน (Discord Embed format)
     payload = {
-        "content": "🚨 **[CRITICAL SECURITY ALERT] พบการตรวจจับภัยคุกคามระดับสูง**",
+        "content": "🚨 **[CRITICAL SECURITY ALERT] High-Severity Threat Detected**",
         "embeds": [
             {
                 "title": f"Target: {incident_data.get('ip')}",
-                "color": 15158332,  # สีแดง Red Hex
+                "color": 15158332,  # Red Hex
                 "fields": [
                     {"name": "Verdict", "value": str(incident_data.get("verdict")), "inline": True},
                     {"name": "Severity", "value": str(incident_data.get("severity")), "inline": True},
-                    {"name": "Confidence", "value": f"{incident_data.get('confidence', 0) * 100}%", "inline": True},
+                    {"name": "Confidence", "value": f"{int(incident_data.get('confidence', 0) * 100)}%", "inline": True},
                     {"name": "Reasoning", "value": incident_data.get("reasoning", "N/A"), "inline": False},
                     {"name": "Recommended Action", "value": "\n".join(incident_data.get("recommended_action", [])), "inline": False}
                 ],
@@ -366,20 +367,17 @@ def send_alert_webhook(incident_data: dict[str, Any], webhook_url: str) -> None:
     try:
         resp = requests.post(webhook_url, json=payload, timeout=5)
         if resp.status_code in [200, 204]:
-            print(f"[+] ส่งการแจ้งเตือนเข้า Webhook สำเร็จสำหรับ IP: {incident_data.get('ip')}", file=sys.stderr)
+            print(f"[+] Webhook alert successfully dispatched for IP: {incident_data.get('ip')}", file=sys.stderr)
         else:
-            print(f"[-] ไม่สามารถส่ง Webhook ได้ (Status: {resp.status_code})", file=sys.stderr)
+            print(f"[-] Failed to dispatch webhook alert (HTTP {resp.status_code})", file=sys.stderr)
     except Exception as e:
-        print(f"[-] Webhook ส่งไม่สำเร็จ: {e}", file=sys.stderr)
+        print(f"[-] Webhook delivery exception: {e}", file=sys.stderr)
 
 # ==========================================
-# 5. CLI Entrypoint
-# ==========================================
-# ==========================================
-# 5. CLI Entrypoint (รองรับทั้ง IP เดี่ยว และไฟล์รายการ IP)
+# 6. Execution Pipeline & CLI Entrypoint
 # ==========================================
 def process_single_ip(raw_ip: str, use_ai: bool = False) -> dict[str, Any]:
-    """ประมวลผล IP ทีละตัว หากตัวไหนพังจะไม่ทำให้คิวที่เหลือล่มตาม"""
+    """Process and triage an individual IP address with caching and fault tolerance."""
     try:
         ip_obj = ipaddress.ip_address(raw_ip.strip())
 
@@ -395,12 +393,12 @@ def process_single_ip(raw_ip: str, use_ai: bool = False) -> dict[str, Any]:
 
         target_ip_str = str(ip_obj)
 
-        # 1. เช็กแคชในเครื่องก่อน
+        # 1. Query local cache to prevent redundant API queries
         cached_data = get_cached_result(target_ip_str, max_age_hours=24)
         if cached_data:
             return cached_data
 
-        # 2. ถ้าไม่มีในแคช ให้ดึงจาก API ภายนอก
+        # 2. Cache miss: Fetch live telemetry from external threat feeds
         evidence = fetch_abuseipdb(target_ip_str)
         vt_evidence = fetch_virustotal(target_ip_str)
         result = analyze(evidence, vt_evidence)
@@ -410,10 +408,10 @@ def process_single_ip(raw_ip: str, use_ai: bool = False) -> dict[str, Any]:
             combined_evidence = {"abuseipdb": evidence, "virustotal": vt_evidence}
             result = enrich_with_gemini(result, combined_evidence)
 
-        # 3. บันทึกผลลง SQLite สำหรับใช้งานครั้งถัดไป
+        # 3. Store result in SQLite cache for subsequent queries
         save_to_cache(target_ip_str, result)
 
-        # ตรวจสอบว่าถ้าผลเป็น CRITICAL ให้ยิง Webhook แจ้งเตือนทันที
+        # Dispatch real-time alert for newly identified critical threats
         webhook_url = os.environ.get("ALERT_WEBHOOK_URL", "")
         if result.get("severity") == "CRITICAL" and webhook_url:
             send_alert_webhook(result, webhook_url)
@@ -423,9 +421,17 @@ def process_single_ip(raw_ip: str, use_ai: bool = False) -> dict[str, Any]:
     except ValueError:
         return {"ip": raw_ip, "verdict": "ERROR", "error": f"Invalid IP address format: '{raw_ip}'", "cached": False}
 
+def parse_auth_log(log_content: str, threshold: int = 2) -> list[str]:
+    """Parse Linux authentication logs and extract IPs exceeding failed login thresholds."""
+    pattern = r"Failed password for (?:invalid user )?\S+ from (\d{1,3}(?:\.\d{1,3}){3})"
+    failed_ips = re.findall(pattern, log_content)
+    
+    # Aggregate failed attempt counts per IP
+    ip_counts = Counter(failed_ips)
+    return [ip for ip, count in ip_counts.items() if count >= threshold]
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Conservative IP Threat Triage Tool")
+    parser = argparse.ArgumentParser(description="Automated IP Threat Triage Tool")
     parser.add_argument("ip", nargs="?", help="Single target IP address to investigate")
     parser.add_argument("-f", "--file", help="Path to text file containing list of IPs (one per line)")
     parser.add_argument("-o", "--output", help="Path to save JSON report (e.g., report.json)")
@@ -433,7 +439,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.ip and not args.file:
-        parser.error("กรุณาระบุ IP เดี่ยว หรือใช้ -f <ชื่อไฟล์รายการ IP>")
+        parser.error("Please specify a target IP or provide a list via -f <filepath>")
 
     if args.file:
         if not os.path.exists(args.file):
@@ -441,12 +447,11 @@ def main() -> int:
             return 1
         
         with open(args.file, "r", encoding="utf-8") as f:
-            # อ่านทีละบรรทัด ข้ามบรรทัดว่างและบรรทัดที่มีเครื่องหมาย #
             ip_list = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
         results = []
         for item in ip_list:
-            print(f"[*] กำลังตรวจสอบ {item}...", file=sys.stderr)
+            print(f"[*] Triaging target {item}...", file=sys.stderr)
             results.append(process_single_ip(item, use_ai=args.ai))
         final_output: Any = results
     else:
@@ -457,27 +462,11 @@ def main() -> int:
     if args.output:
         with open(args.output, "w", encoding="utf-8") as out_f:
             out_f.write(json_text + "\n")
-        print(f"[+] บันทึกรายงานสำเร็จที่ไฟล์: {args.output}", file=sys.stderr)
+        print(f"[+] Triage report saved successfully to: {args.output}", file=sys.stderr)
     else:
         print(json_text)
 
     return 0
-
-import re
-from collections import Counter
-
-def parse_auth_log(log_content: str, threshold: int = 2) -> list[str]:
-    """
-    อ่านข้อความ auth log แล้วคัดเฉพาะ IP ที่ล็อกอินล้มเหลวเกินจำนวน threshold
-    """
-    pattern = r"Failed password for (?:invalid user )?\S+ from (\d{1,3}(?:\.\d{1,3}){3})"
-    failed_ips = re.findall(pattern, log_content)
-    
-    # นับความถี่ว่า IP ไหนพยายามเจาะเข้ามาบ่อยสุด
-    ip_counts = Counter(failed_ips)
-    suspicious_ips = [ip for ip, count in ip_counts.items() if count >= threshold]
-    
-    return suspicious_ips
 
 if __name__ == "__main__":
     raise SystemExit(main())
