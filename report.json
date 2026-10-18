@@ -1,0 +1,52 @@
+[
+  {
+    "ip": "185.220.101.5",
+    "verdict": "TRUE_POSITIVE",
+    "severity": "CRITICAL",
+    "reasoning": "Country DE; ISP Artikel10 e.V.; reported Tor exit node; reported categories: bad_bot, brute_force, ddos, exploited_host, hacking, port_scan, ssh, web_attack, web_spam; abuse score 100/100 across 393 reports.",
+    "recommended_action": [
+      "Apply a temporary 24-hour edge firewall block.",
+      "Inspect local firewall and authentication logs for active sessions."
+    ],
+    "incident_note": "Target: 185.220.101.5 (Artikel10 e.V.)\nEvidence: Score 100%, Reports: 393, Tor Node\nVerdict: TRUE_POSITIVE / Severity: CRITICAL\nAction: Apply a temporary 24-hour edge firewall block.",
+    "confidence": 0.85,
+    "automation": {
+      "firewall_change": false,
+      "requires_human_approval": true
+    }
+  },
+  {
+    "ip": "8.8.8.8",
+    "verdict": "BENIGN",
+    "severity": "LOW",
+    "reasoning": "Country US; ISP Google LLC; reported categories: bad_bot, brute_force, ddos, exploited_host, hacking, open_proxy, port_scan, ssh, web_attack; abuse score 0/100 across 237 reports.",
+    "recommended_action": [
+      "Do not block; recognized public service: Google Public DNS.",
+      "Verify destination port and internal traffic flow."
+    ],
+    "incident_note": "Target: 8.8.8.8 (Google LLC)\nEvidence: Score 0%, Reports: 237\nVerdict: BENIGN / Severity: LOW\nAction: Do not block; recognized public service: Google Public DNS.",
+    "confidence": 0.85,
+    "automation": {
+      "firewall_change": false,
+      "requires_human_approval": true
+    }
+  },
+  {
+    "ip": "192.168.1.1",
+    "verdict": "INTERNAL_IP",
+    "severity": "INFO",
+    "reasoning": "Private, loopback, or reserved IP address. External reputation lookup skipped.",
+    "recommended_action": [
+      "Do not query external threat intel; inspect internal DHCP or asset inventory logs instead."
+    ],
+    "automation": {
+      "firewall_change": false,
+      "requires_human_approval": false
+    }
+  },
+  {
+    "ip": "999.999.1.1",
+    "verdict": "ERROR",
+    "error": "Invalid IP address format: '999.999.1.1'"
+  }
+]

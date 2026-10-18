@@ -1,0 +1,19 @@
+
+
+# Credentials & Secrets (ห้ามนำขึ้นเด็ดขาด)
+.env
+
+# Database & Cache (เก็บไว้เฉพาะในเครื่อง Mac)
+triage_cache.db
+
+# Python runtime & environment
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Output reports & temporary logs
+outputs/
+*.log
+soc_triage_report.csv
+soc_triage_report.json

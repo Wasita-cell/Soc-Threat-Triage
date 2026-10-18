@@ -1,0 +1,13 @@
+{
+  "ip": "185.220.101.5",
+  "country": "DE",
+  "isp": "Artikel10 e.V.",
+  "abuse_score": 100,
+  "tor_exit": true,
+  "total_reports": 389,
+  "categories": ["Port Scan", "Brute-force SSH"],
+  "local_evidence": {
+    "successful_auth": false,
+    "exploit_confirmed": false
+  }
+}
