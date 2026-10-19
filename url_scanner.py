@@ -36,7 +36,7 @@ def check_url_heuristics(url: str) -> list[str]:
         flags.append("Direct IP address used as host (Suspicious)")
 
     # Check for non-standard web ports
-    if parsed.port and parsed.port not in [80, 443, 8080]:
+    if parsed.port and parsed.port not in [80, 443]:
         flags.append(f"Non-standard web port detected: {parsed.port}")
 
     # Excessive subdomain nesting common in phishing campaigns
@@ -76,7 +76,7 @@ def scan_url_virustotal(target_url: str) -> dict[str, Any]:
                 verdict = "MALICIOUS"
                 severity = "CRITICAL"
             elif (malicious >= 2) or (malicious == 1 and harmless < 10) or suspicious >= 2 or len(heuristics) > 0:
-                verdict = "SUSPICIOUS"
+                verdict = "SUSPICIOUS" if (malicious > 0 or suspicious > 0) else "SUSPICIOUS_HEURISTICS"
                 severity = "MEDIUM"
             else:
                 verdict = "BENIGN"
@@ -94,14 +94,25 @@ def scan_url_virustotal(target_url: str) -> dict[str, Any]:
             }
 
         elif response.status_code == 404:
+            # Elevate severity to MEDIUM if structural heuristics are detected,
+            # even when the URL is unrated/not found in VirusTotal cache.
+            if len(heuristics) > 0:
+                verdict = "SUSPICIOUS_HEURISTICS"
+                severity = "MEDIUM"
+            else:
+                verdict = "UNRATED"
+                severity = "INFO"
+
             return {
                 "original_url": target_url,
                 "defanged_url": defang_url(target_url),
-                "verdict": "UNRATED",
-                "severity": "INFO",
+                "verdict": verdict,
+                "severity": severity,
+                "stats": {"malicious": 0, "suspicious": 0, "harmless": 0, "undetected": 0},
                 "heuristics": heuristics,
                 "status": "URL not found in VirusTotal cache (Pending manual submission)"
             }
+
         elif response.status_code == 429:
             return {"error": "VirusTotal API rate limit exceeded (max 4 req/min)."}
         else:
