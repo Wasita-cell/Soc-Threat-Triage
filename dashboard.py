@@ -2,7 +2,7 @@
 """
 Unified SOC Analyst Investigation Dashboard
 Supports IP Threat Triage, URL Reputation Scanning, Phishing Email (.eml) Analysis,
-Automated Containment Rule Generation, and Tier-2 Incident Ticket Handover.
+File Hash & Attachment Inspection, Automated Containment, and Incident Ticket Handover.
 """
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ import streamlit as st
 from app import process_single_ip, parse_auth_log
 from url_scanner import scan_url_virustotal, defang_url
 from email_parser import inspect_email_file
+from file_inspector import (
+    inspect_file_payload,
+    query_file_hash_virustotal,
+    generate_hash_containment
+)
 from containment import (
     generate_ip_containment,
     generate_domain_containment,
@@ -32,7 +37,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ SOC Analyst Investigation & Triage Toolkit")
-st.caption("Automated Tier-1 triage pipeline for network logs, IP reputation, suspicious URLs, and phishing artifacts.")
+st.caption("Automated Tier-1 triage pipeline for network logs, IP reputation, suspicious URLs, phishing artifacts, and file hashes.")
 
 # Sidebar Configuration
 with st.sidebar:
@@ -41,10 +46,11 @@ with st.sidebar:
     st.info("Automated Webhook alerts dispatch when CRITICAL severity threats are triaged.")
 
 # Tabbed Workspace
-tab_ip, tab_url, tab_email = st.tabs([
+tab_ip, tab_url, tab_email, tab_file = st.tabs([
     "🌐 IP Threat Intelligence",
     "🔗 URL Reputation Scanner",
-    "📧 Phishing Email Analyzer"
+    "📧 Phishing Email Analyzer",
+    "📁 File Hash & Malware Inspector"
 ])
 
 # ==========================================
@@ -111,14 +117,12 @@ with tab_ip:
                 with st.expander(f"📍 Target: {ip_label} — Verdict: {verdict_label} ({severity_label})"):
                     st.json(record)
 
-                    # Containment & Escalation for Medium / Critical Threats
                     if severity_label in ["CRITICAL", "MEDIUM"]:
                         st.markdown("#### 🛑 Recommended Firewall Containment")
                         containment_cmds = generate_ip_containment(ip_label)
                         for env_name, cmd in containment_cmds.items():
                             st.code(cmd, language="bash")
 
-                        # Generate Incident Handover Ticket
                         ticket_md = format_incident_ticket(
                             incident_type="IP Intelligence",
                             target=ip_label,
@@ -128,12 +132,13 @@ with tab_ip:
                             containment_actions=containment_cmds
                         )
                         st.markdown("#### 📋 Incident Handover Ticket (Tier-2 / IR)")
-                        st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220)
+                        st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220, key=f"tkt_ip_{ip_label}")
                         st.download_button(
                             label=f"📥 Download Ticket ({ip_label})",
                             data=ticket_md,
                             file_name=f"incident_ticket_{ip_label}.md",
-                            mime="text/markdown"
+                            mime="text/markdown",
+                            key=f"dl_ip_{ip_label}"
                         )
 
 # ==========================================
@@ -174,7 +179,6 @@ with tab_url:
                 else:
                     st.success("No suspicious URL heuristic patterns detected.")
 
-                # Containment & Incident Ticket
                 if severity_label in ["CRITICAL", "MEDIUM"]:
                     st.markdown("---")
                     st.markdown("### 🛑 Recommended Domain Sinkhole / Containment")
@@ -191,12 +195,13 @@ with tab_url:
                         containment_actions=containment_cmds
                     )
                     st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
-                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220)
+                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220, key="tkt_url")
                     st.download_button(
                         label="📥 Download URL Incident Ticket",
                         data=ticket_md,
                         file_name="incident_ticket_url.md",
-                        mime="text/markdown"
+                        mime="text/markdown",
+                        key="dl_url"
                     )
 
                 with st.expander("View Raw Scanner Telemetry"):
@@ -250,14 +255,12 @@ with tab_email:
                     for flag in sender_flags:
                         st.markdown(f"- {flag}")
 
-                # Display Impersonation & Social Engineering Alerts
                 impersonation_alerts = email_report.get("impersonation_alerts", [])
                 if impersonation_alerts:
                     st.error("🚨 **Brand Impersonation & Social Engineering:**")
                     for alert in impersonation_alerts:
                         st.markdown(f"- {alert}")
 
-                # Display Subdomain Deception Warnings
                 url_deception_flags = email_report.get("url_deception_flags", [])
                 if url_deception_flags:
                     st.warning("⚠️ **URL Subdomain Deception Detected:**")
@@ -272,7 +275,6 @@ with tab_email:
                 else:
                     st.info("No external links found in email body.")
 
-                # Containment & Incident Ticket
                 if severity_label in ["CRITICAL", "MEDIUM"]:
                     st.markdown("---")
                     st.markdown("### 🛑 Recommended Email & Tenant Containment")
@@ -292,12 +294,13 @@ with tab_email:
                         containment_actions=containment_cmds
                     )
                     st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
-                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=240)
+                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=240, key="tkt_eml")
                     st.download_button(
                         label="📥 Download Phishing Incident Ticket",
                         data=ticket_md,
                         file_name="incident_ticket_phishing.md",
-                        mime="text/markdown"
+                        mime="text/markdown",
+                        key="dl_eml"
                     )
 
                 with st.expander("View Full Email Analysis JSON"):
@@ -306,3 +309,137 @@ with tab_email:
             finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
+
+# ==========================================
+# TAB 4: File Hash & Malware Inspector
+# ==========================================
+with tab_file:
+    st.subheader("File Hash & Artifact Triage")
+    st.caption("Calculate cryptographic hashes, detect deceptive extension patterns, and query VirusTotal using Privacy-First hash lookups.")
+
+    investigation_mode = st.radio("Choose Investigation Method:", ["Upload File Artifact", "Direct SHA-256 Hash Lookup"], horizontal=True)
+
+    if investigation_mode == "Upload File Artifact":
+        uploaded_payload = st.file_uploader("Upload Suspect File / Attachment", type=None)
+        run_file_inspect = st.button("Inspect File", type="primary")
+
+        if run_file_inspect:
+            if not uploaded_payload:
+                st.warning("Please upload a file to analyze.")
+            else:
+                file_bytes = uploaded_payload.read()
+                filename = uploaded_payload.name
+
+                with st.spinner("Calculating hashes, evaluating heuristics, and querying VirusTotal..."):
+                    file_report = inspect_file_payload(filename, file_bytes)
+
+                verdict_label = file_report.get("verdict", "N/A")
+                severity_label = file_report.get("severity", "LOW")
+
+                f1, f2, f3, f4 = st.columns(4)
+                f1.metric("Verdict", verdict_label)
+                f2.metric("Severity", severity_label)
+                vt_stats = file_report.get("virustotal", {}).get("stats", {})
+                f3.metric("Malicious Flags", vt_stats.get("malicious", 0))
+                f4.metric("File Size", f"{file_report.get('filesize_bytes')} bytes")
+
+                st.markdown("### 🔑 Cryptographic Hashes (Local Calculation)")
+                hashes = file_report.get("hashes", {})
+                st.code(f"SHA-256: {hashes.get('sha256')}\nMD5:     {hashes.get('md5')}\nSHA-1:   {hashes.get('sha1')}", language="text")
+
+                # Heuristics warnings
+                heuristics = file_report.get("heuristics", [])
+                if heuristics:
+                    st.warning("⚠️ **File Heuristic Alerts:**")
+                    for h in heuristics:
+                        st.markdown(f"- {h}")
+                else:
+                    st.success("No deceptive naming or high-risk execution extensions detected.")
+
+                # Containment & Incident Ticket
+                if severity_label in ["CRITICAL", "MEDIUM"]:
+                    st.markdown("---")
+                    st.markdown("### 🛑 Recommended Endpoint & EDR Containment")
+                    containment_cmds = generate_hash_containment(hashes.get("sha256", ""), filename)
+                    for env_name, cmd in containment_cmds.items():
+                        st.markdown(f"**{env_name}:**")
+                        st.code(cmd, language="powershell" if "Windows" in env_name or "Defender" in env_name else "bash")
+
+                    ticket_md = format_incident_ticket(
+                        incident_type="File Hash Investigation",
+                        target=filename,
+                        verdict=verdict_label,
+                        severity=severity_label,
+                        details=file_report,
+                        containment_actions=containment_cmds
+                    )
+                    st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
+                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220, key="tkt_file")
+                    st.download_button(
+                        label="📥 Download File Incident Ticket",
+                        data=ticket_md,
+                        file_name=f"incident_ticket_{filename}.md",
+                        mime="text/markdown",
+                        key="dl_file"
+                    )
+
+                with st.expander("View Full File Analysis JSON"):
+                    st.json(file_report)
+
+    else:
+        # Direct Hash lookup
+        manual_hash = st.text_input("Enter Target SHA-256 Hash", placeholder="e.g., 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f")
+        run_hash_lookup = st.button("Lookup Hash", type="primary")
+
+        if run_hash_lookup:
+            if not manual_hash or len(manual_hash.strip()) != 64:
+                st.warning("Please provide a valid 64-character SHA-256 hash.")
+            else:
+                target_hash = manual_hash.strip()
+                with st.spinner("Querying VirusTotal threat intelligence for hash..."):
+                    vt_result = query_file_hash_virustotal(target_hash)
+
+                if "error" in vt_result:
+                    st.error(vt_result["error"])
+                else:
+                    verdict_label = vt_result.get("verdict", "N/A")
+                    severity_label = vt_result.get("severity", "LOW")
+
+                    h1, h2, h3, h4 = st.columns(4)
+                    h1.metric("Verdict", verdict_label)
+                    h2.metric("Severity", severity_label)
+                    stats = vt_result.get("stats", {})
+                    h3.metric("Malicious Flags", stats.get("malicious", 0))
+                    h4.metric("Threat Label", vt_result.get("threat_label", "N/A"))
+
+                    st.markdown(f"- **Identified Type:** `{vt_result.get('file_type', 'N/A')}`")
+                    st.markdown(f"- **Magic Header:** `{vt_result.get('magic_header', 'N/A')}`")
+
+                    if severity_label in ["CRITICAL", "MEDIUM"]:
+                        st.markdown("---")
+                        st.markdown("### 🛑 Recommended EDR Block Rules")
+                        containment_cmds = generate_hash_containment(target_hash, "Target_Artifact")
+                        for env_name, cmd in containment_cmds.items():
+                            st.code(cmd, language="powershell" if "Windows" in env_name else "bash")
+
+                        details_dict = {"filename": target_hash, "hashes": {"sha256": target_hash}, "virustotal": vt_result}
+                        ticket_md = format_incident_ticket(
+                            incident_type="File Hash Investigation",
+                            target=target_hash,
+                            verdict=verdict_label,
+                            severity=severity_label,
+                            details=details_dict,
+                            containment_actions=containment_cmds
+                        )
+                        st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
+                        st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220, key="tkt_hash")
+                        st.download_button(
+                            label="📥 Download Hash Incident Ticket",
+                            data=ticket_md,
+                            file_name=f"incident_ticket_{target_hash[:8]}.md",
+                            mime="text/markdown",
+                            key="dl_hash"
+                        )
+
+                    with st.expander("View Raw Threat Intelligence JSON"):
+                        st.json(vt_result)

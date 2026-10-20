@@ -64,6 +64,25 @@ def format_incident_ticket(
             for a in alerts:
                 lines.append(f"  - {a}")
 
+    elif incident_type == "File Hash Investigation":
+        lines.append(f"- **Filename:** `{details.get('filename', target)}`")
+        lines.append(f"- **File Size:** {details.get('filesize_bytes', 'N/A')} bytes")
+        hashes = details.get("hashes", {})
+        if hashes:
+            lines.append(f"- **SHA-256:** `{hashes.get('sha256', target)}`")
+            lines.append(f"- **MD5:** `{hashes.get('md5', 'N/A')}`")
+            lines.append(f"- **SHA-1:** `{hashes.get('sha1', 'N/A')}`")
+        else:
+            lines.append(f"- **Target Hash:** `{target}`")
+        vt_info = details.get("virustotal", {})
+        stats = vt_info.get("stats", {})
+        lines.append(f"- **VirusTotal Flagged:** {stats.get('malicious', 0)} engines flagged as malicious")
+        heuristics = details.get("heuristics", [])
+        if heuristics:
+            lines.append("- **File Heuristic Alerts:**")
+            for h in heuristics:
+                lines.append(f"  - {h}")
+
     # MITRE ATT&CK Section
     mitre_tags = details.get("mitre_attack", [])
     if mitre_tags:
