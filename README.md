@@ -1,5 +1,7 @@
 # 🛡️ SOC Analyst Investigation & Threat Triage Toolkit
 
+![SOC Toolkit CI Pipeline](https://github.com/Wasita-cell/Soc-Threat-Triage/actions/workflows/ci.yml/badge.svg)
+
 An automated, modular Tier-1 SOC triage, incident response, and threat enrichment pipeline built in Python and Streamlit. Designed to accelerate security operations, mitigate alert fatigue, and correlate multi-vector indicators across Network, Web, Phishing, Malware, and Smishing/Vishing artifacts.
 
 ---
