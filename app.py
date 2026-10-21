@@ -20,6 +20,16 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 import requests
+import ipaddress
+
+
+def is_internal_ip(ip_str: str) -> bool:
+    """Check if an IP address belongs to RFC 1918 private, loopback, or reserved ranges."""
+    try:
+        ip_obj = ipaddress.ip_address(ip_str.strip())
+        return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_reserved
+    except ValueError:
+        return False
 
 # Optional import for Gemini AI enrichment
 try:

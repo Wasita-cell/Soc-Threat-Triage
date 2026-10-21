@@ -1,0 +1,27 @@
+Received: from mailer.external-gateway.com (mailer.external-gateway.com [198.51.100.25])
+    by mx.enterprise.co.nz with ESMTP id ABC123XYZ;
+    Wed, 21 Oct 2026 09:15:00 +1300
+Authentication-Results: mx.enterprise.co.nz;
+    spf=pass smtp.mailfrom=bounce@external-gateway.com;
+    dkim=pass header.d=external-gateway.com;
+    dmarc=fail (p=none) header.from=anz.co.nz
+From: "ANZ Security Support" <alerts-security@anz-support-portal.net>
+Reply-To: security-team@gmail.com
+Return-Path: <bounce@external-gateway.com>
+To: target.user@enterprise.co.nz
+Subject: Urgent: Unauthorized Sign-in Attempt Detected on Your ANZ Account
+Date: Wed, 21 Oct 2026 09:14:50 +1300
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+Dear Customer,
+
+We detected an unauthorized sign-in attempt to your ANZ goMoney profile from an unrecognized device.
+
+To prevent account suspension, verify your account details immediately:
+http://185.220.101.5:8080/anz/verify-identity
+
+If you need urgent assistance, contact our verification desk or reply to this alert.
+
+ANZ Banking Group New Zealand
+Short Code: 4444

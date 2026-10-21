@@ -1,0 +1,20 @@
+{
+  "ip_targets": {
+    "malicious_brute_force": "185.220.101.5",
+    "internal_rfc1918": "192.168.1.105"
+  },
+  "url_targets": {
+    "suspicious_ip_and_port": "http://185.220.101.5:8080/anz/verify-identity",
+    "subdomain_deception": "https://anz.co.nz.portal-security-check.com/login"
+  },
+  "file_hashes": {
+    "eicar_test_hash": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+    "suspicious_double_extension_name": "ANZ_eStatement_October.pdf.exe"
+  },
+  "phone_sms_targets": {
+    "nz_verified_anz_short_code": "4444",
+    "nz_verified_post_short_code": "898",
+    "unverified_short_code": "9123",
+    "fictional_test_line": "+1 202 555 0123"
+  }
+}
