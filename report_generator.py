@@ -83,6 +83,18 @@ def format_incident_ticket(
             for h in heuristics:
                 lines.append(f"  - {h}")
 
+    elif incident_type == "Phone Intelligence":
+        lines.append(f"- **E.164 Standard Format:** `{details.get('e164_format', target)}`")
+        lines.append(f"- **International Format:** `{details.get('international_format', 'N/A')}`")
+        lines.append(f"- **Identified Region / Country:** {details.get('region', 'N/A')}")
+        lines.append(f"- **Carrier / Telecom Provider:** {details.get('carrier', 'N/A')}")
+        lines.append(f"- **Line Classification:** {details.get('line_type', 'N/A')}")
+        heuristics = details.get("heuristics", [])
+        if heuristics:
+            lines.append("- **Threat Heuristic Indicators:**")
+            for h in heuristics:
+                lines.append(f"  - {h}")
+
     # MITRE ATT&CK Section
     mitre_tags = details.get("mitre_attack", [])
     if mitre_tags:

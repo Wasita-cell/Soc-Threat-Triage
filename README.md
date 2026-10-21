@@ -1,66 +1,68 @@
 # 🛡️ SOC Analyst Investigation & Threat Triage Toolkit
 
-An automated, modular Tier-1 SOC triage, incident response, and threat enrichment pipeline built in Python and Streamlit. Designed to accelerate security operations, mitigate alert fatigue, and correlate multi-vector indicators across Network, Web, Phishing, and Malware artifacts.
+An automated, modular Tier-1 SOC triage, incident response, and threat enrichment pipeline built in Python and Streamlit. Designed to accelerate security operations, mitigate alert fatigue, and correlate multi-vector indicators across Network, Web, Phishing, Malware, and Smishing/Vishing artifacts.
 
 ---
 
 ## 📌 Executive Summary
 
-Security Operations Centers (SOCs) face overwhelming alert volumes daily. Manual pivoting between threat intelligence feeds, email headers, raw authentication logs, and malware sandboxes is repetitive, error-prone, and time-consuming.
+Security Operations Centers (SOCs) face overwhelming alert volumes daily. Manual pivoting between threat intelligence feeds, email headers, raw authentication logs, file sandboxes, and telecom databases is repetitive, error-prone, and time-consuming.
 
 This toolkit automates the end-to-end investigation and initial containment workflow for Tier-1 analysts:
 1. **Network & System Logs:** Sanitizes internal RFC 1918 traffic, detects SSH brute-force attempts from Linux `auth.log`, queries cached threat intelligence, and maps attacks to the **MITRE ATT&CK** matrix.
 2. **Suspicious URLs:** Evaluates structural heuristics (ports, direct IP hosting, subdomain depth), suppresses VirusTotal false positives, and neutralizes indicators via automated **IOC Defanging**.
 3. **Phishing Artifacts (.eml):** Extracts technical authentication tags (**SPF/DKIM/DMARC**), flags sender mismatches, detects **Freemail brand impersonation** (e.g., banks mimicked via `@gmail.com`), and harvests embedded lures.
 4. **File Hash & Malware Inspection:** Employs **Privacy-First triage** by calculating cryptographic hashes (MD5, SHA-1, SHA-256) locally and querying threat feeds without uploading proprietary file contents, while flagging deceptive naming conventions (double extensions, macro-enabled scripts).
-5. **Mini-SOAR Containment:** Generates ready-to-execute boundary firewall rules (Linux UFW, iptables), DNS sinkholes, Microsoft 365 Exchange tenant purges, and EDR block policies.
-6. **Incident Handover Ticketing:** Standardizes findings into structured Markdown incident tickets for rapid Tier-2 / Incident Response escalation.
+5. **Phone & Smishing/Vishing Intelligence:** Validates international telephone numbers via E.164, detects high-risk anonymous VoIP virtual lines, and verifies **NZ Enterprise SMS Short Codes** against official Telecommunications Forum (TCF) registry records.
+6. **Mini-SOAR Containment:** Generates ready-to-execute boundary firewall rules (Linux UFW, iptables), DNS sinkholes, Microsoft 365 Exchange tenant purges, EDR block policies, and PBX/SMS gateway drop rules.
+7. **Incident Handover Ticketing:** Standardizes findings into structured Markdown incident tickets for rapid Tier-2 / Incident Response escalation.
 
 ---
 
 ## 🏗️ System Architecture
 
 ```text
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                        MULTI-VECTOR INGESTION (DATA INPUT LAYER)                       │
-└──────────┬──────────────────────┬───────────────────────┬──────────────────────┬───────┘
-           │                      │                       │                      │
-           ▼                      ▼                       ▼                      ▼
-  [ 1. Network Logs ]    [ 2. Suspicious URL ]   [ 3. Raw Email (.eml) ]  [ 4. File / Hash ]
-           │                      │                       │                      │
-           ▼                      ▼                       ▼                      ▼
-    Regex Log Parser      URL Heuristics          Email Parser (RFC 5322) Hash Calculation
-(Failed Brute Force >= 2) (Port, IP Host, Depth)  ├── SPF/DKIM/DMARC      (MD5/SHA1/SHA256)
-           │                      │               ├── Sender Spoofing            │
-           ▼                      │               ├── Brand Impersonation        ▼
-RFC 1918 Private IP Filter        │               └── URL Harvesting      Heuristic Engine
-(Sanitize Internal Traffic)       │                       │               (Double Ext, Macros)
-           │                      ▼                       │                      │
-           ▼             Subdomain Deception              │                      │
- SQLite Cache (24h TTL)           │                       │                      │
-  ├── Hit  ──> Local DB           │                       │                      │
-  └── Miss ──> Live APIs          ▼                       ▼                      ▼
-       (AbuseIPDB / VT)      VirusTotal v3 API   VirusTotal Pipeline     VirusTotal File API
-           │                 (FP Suppression)    (Extracted Links)       (Privacy-First Hash)
-           │                      │                       │                      │
-           ▼                      ▼                       ▼                      ▼
- ┌───────────────────────────────────────────────────────────────────────────────────────┐
- │                          UNIFIED TRIAGE & ENRICHMENT ENGINE                           │
- ├───────────────────────────────────────────────────────────────────────────────────────┤
- │ • Multi-Factor Severity Scoring (LOW / MEDIUM / CRITICAL)                             │
- │ • MITRE ATT&CK Auto-Mapping (T1110, T1595, T1566, T1566.002, T1204, T1059, T1036)    │
- │ • Automated IOC Defanging (e.g., hxxps://evil[.]com)                                  │
- │ • Optional LLM Context Enrichment (Gemini API)                                        │
- └──────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │
-        ┌───────────────────────────────────┼───────────────────────────────────┐
-        ▼                                   ▼                                   ▼
-[ Real-Time Alert ]             [ Mini-SOAR Containment ]             [ Analyst Workspace ]
-  Discord Webhook              Automated CLI Block Scripts          Streamlit 4-Tab Interface
-(CRITICAL Triggers)        ├── Firewall (UFW / iptables)          ├── Interactive Visual Triage
-                           ├── DNS Sinkhole (/etc/hosts)          ├── Raw Telemetry JSON
-                           ├── M365 Email Purge (PowerShell)      └── Tier-2 Handover Tickets
-                           └── EDR Hash Rules (WDAC / Defender)       (Markdown / File Export)
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                               MULTI-VECTOR INGESTION (DATA INPUT LAYER)                                 │
+└───────┬───────────────────┬───────────────────────┬──────────────────────┬──────────────────────┬───────┘
+        │                   │                       │                      │                      │
+        ▼                   ▼                       ▼                      ▼                      ▼
+ [ 1. Network Logs ] [ 2. Suspicious URL ]   [ 3. Raw Email (.eml) ] [ 4. File / Hash ]    [ 5. Phone / SMS ]
+        │                   │                       │                      │                      │
+        ▼                   ▼                       ▼                      ▼                      ▼
+  Regex Log Parser   URL Heuristics          Email Parser (RFC 5322) Hash Calculation      TCF / E.164 Triage
+(Brute Force >= 2)   (Port, IP Host, Depth)  ├── SPF/DKIM/DMARC      (MD5/SHA1/SHA256)     ├── NZ Short Codes
+        │                   │                ├── Sender Spoofing           │               ├── VoIP Detection
+        ▼                   │                ├── Brand Impersonation       ▼               └── Carrier Lookup
+RFC 1918 Sanitizer          │                └── URL Harvesting     Heuristic Engine              │
+(Internal Filter)           │                       │               (Double Ext, Macros)          │
+        │                   ▼                       │                      │                      │
+        ▼          Subdomain Deception              │                      │                      │
+SQLite Cache (24h)          │                       │                      │                      │
+ ├── Hit  -> DB             │                       │                      │                      │
+ └── Miss -> APIs           ▼                       ▼                      ▼                      │
+      (AbuseIPDB)     VirusTotal v3 API     VirusTotal Pipeline    VirusTotal File API            │
+        │             (FP Suppression)      (Extracted Links)      (Privacy-First Hash)           │
+        │                   │                       │                      │                      │
+        ▼                   ▼                       ▼                      ▼                      ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                                  UNIFIED TRIAGE & ENRICHMENT ENGINE                                    │
+ ├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ • Multi-Factor Severity Scoring (LOW / MEDIUM / CRITICAL)                                              │
+ │ • MITRE ATT&CK Auto-Mapping (T1110, T1595, T1566, T1566.002, T1566.005, T1204, T1059, T1036)           │
+ │ • Automated IOC Defanging (e.g., hxxps://evil[.]com)                                                   │
+ │ • Optional LLM Context Enrichment (Gemini API)                                                         │
+ └──────────────────────────────────────────────────┬─────────────────────────────────────────────────────┘
+                                                    │
+        ┌───────────────────────────────────────────┼───────────────────────────────────────────┐
+        ▼                                           ▼                                           ▼
+[ Real-Time Alert ]                     [ Mini-SOAR Containment ]                     [ Analyst Workspace ]
+  Discord Webhook                      Automated CLI Block Scripts                  Streamlit 5-Tab Interface
+(CRITICAL Triggers)                ├── Firewall (UFW / iptables)                  ├── Interactive Visual Triage
+                                   ├── DNS Sinkhole (/etc/hosts)                  ├── Raw Telemetry JSON
+                                   ├── M365 Email Purge (PowerShell)              └── Tier-2 Handover Tickets
+                                   ├── EDR Hash Rules (WDAC / Defender)               (Markdown / File Export)
+                                   └── PBX / SMS Drop Rules (Asterisk/SMPP)
 
 ⚡ Core Modules & Capabilities
 
@@ -80,6 +82,9 @@ RFC 1918 Private IP Filter        │               └── URL Harvesting    
    File & Hash Inspector    file_inspector.py    Artifact & Malware Analysis               Local MD5/SHA-1/SHA-256 calculation,
                                                                                            Privacy-First VirusTotal hash lookup,
                                                                                            double extension detection (.pdf.exe), risky script/macro identification.
+
+   Phone & Smishing         phone_scanner.py     Telecom & SMS Short Code Triage           Offline E.164 parsing via phonenumbers, VoIP virtual line detection, 
+                                                                                           NZ TCF-registered banking/courier short code verification, PBX/SMS gateway containment.
 
    Containment Engine       containment.py       Automated Threat Response (SOAR)          Generates Linux UFW/iptables rules,
                                                                                            Windows Firewall commands,
@@ -111,25 +116,30 @@ RFC 1918 Private IP Filter        │               └── URL Harvesting    
        - Privacy-First Hash Lookup:** Computes `MD5`, `SHA-1`, and `SHA-256` locally from raw file bytes and queries VirusTotal File API by hash only, preventing sensitive or proprietary enterprise data leakage.
        - Deceptive Pattern Heuristics:** Flags deceptive evasion techniques such as double extensions (e.g., `invoice.pdf.exe`), excessive whitespace padding, and macro-enabled Office payloads (`.docm`, `.xlsm`).
        - Zero-Day Heuristic Escalation:** Automatically elevates unindexed artifacts to `MEDIUM` severity if high-risk script or executable extensions are identified.
-5. 🛑 Automated Containment Engine (`containment.py`)
+5. 📱 Phone & Smishing/Vishing Triage (phone_scanner.py)
+       - NZ Enterprise Short Code Verification: Cross-references 3-to-5 digit short codes against registered New Zealand Telecommunications Forum (TCF) records (e.g., ANZ 4444/244, ASB 2255, NZ Post 898, IRD 308).
+       - Line Type Classification: Detects anonymized virtual numbers (VoIP), distinguishing high-risk vishing lines from standard cellular or landline connections.
+       - Telecom Containment: Formats dialplan block rules for PBX systems (Asterisk, Cisco CUCM) and SMPP SMS gateway blacklists.
+6. 🛑 Automated Containment Engine (`containment.py`)
        - Boundary Firewall Rules:** Generates drop rules for Linux `UFW`, `iptables`, Windows Defender Firewall, and Cisco ACLs.
        - DNS Sinkholing:** Produces host blackhole entries (`/etc/hosts`) and Pi-hole block commands to sever command-and-control (C2) callback attempts.
        - M365 Tenant Remediation:** Generates Microsoft 365 Exchange Online PowerShell scripts to block sender domains and execute compliance purges (Hard Delete) across all mailboxes.
        - EDR Policy Enforcement:** Outputs Windows Defender Application Control (WDAC) and Attack Surface Reduction rules for verified malicious file hashes.
-6. 📋 Incident Ticket & Handover Generator (`report_generator.py`)
+7. 📋 Incident Ticket & Handover Generator (`report_generator.py`)
        - Standardized Escalation:** Formats triage findings into structured tickets with automated tracking IDs (`INC-YYYYMMDD-XXXX`).
        - SOC Context Compilation:** Auto-compiles IOC evidence, analyst reasoning, confidence scores, MITRE ATT&CK tags, and containment commands into clean Markdown ready for immediate handover to Tier-2 / Incident Response teams.
-       
+
 🎯 MITRE ATT&CK Mapping
-       Technique ID	       Technique Name	               Triage Trigger / Condition
+       Technique ID	       Technique Name	                             Triage Trigger / Condition
        
-           T1110             Brute Force                  > 2 failed authentication attempts in Linux auth logs
-           T1595            Active Scanning              Known external scanner IP with elevated AbuseIPDB report confidence
-           T1566               Phishing                  Email artifact with failed SPF/DMARC or mismatched sender domains
-           T1566.002       Spearphishing Link            Subdomain deception lures or confirmed malicious URLs
-           T1204.002        Malicious File               Known malicious file hash or high-risk executable payload (.exe, .bat, .scr)
-           T1059.005          Visual Basic               Macro-enabled Office file extensions (.docm, .xlsm) identified in attachments
-           T1036.007       Double File Extension         Masqueraded filenames hiding executable formats (e.g., invoice.pdf.exe)
+           T1110             Brute Force                               > 2 failed authentication attempts in Linux auth logs
+           T1595            Active Scanning                            Known external scanner IP with elevated AbuseIPDB report confidence
+           T1566               Phishing                               Email artifact with failed SPF/DMARC or mismatched sender domains
+           T1566.002       Spearphishing Link                          Subdomain deception lures or confirmed malicious URLs
+           T1566.005     Voice Phishing (Vishing / Smishing)          Inbound VoIP caller ID, unverified SMS short code, or malicious sender ID
+           T1204.002        Malicious File                            Known malicious file hash or high-risk executable payload (.exe, .bat, .scr)
+           T1059.005          Visual Basic                             Macro-enabled Office file extensions (.docm, .xlsm) identified in attachments
+           T1036.007       Double File Extension                      Masqueraded filenames hiding executable formats (e.g., invoice.pdf.exe)
 
 📁 Repository Structure
         ├── app.py                  # Core IP triage engine, log parser, caching & webhooks
@@ -137,6 +147,7 @@ RFC 1918 Private IP Filter        │               └── URL Harvesting    
         ├── email_parser.py         # Phishing artifact analysis & impersonation heuristics
         ├── url_scanner.py          # VirusTotal reputation scanner & heuristic defanging
         ├── file_inspector.py       # Cryptographic hashing & privacy-first file inspection
+        ├── phone_scanner.py        # Telecom parsing, NZ SMS short codes & VoIP detection
         ├── containment.py          # Automated CLI containment command generator
         ├── report_generator.py     # Standardized SOC incident ticket formatter (Markdown)
         ├── requirements.txt        # Python package dependencies

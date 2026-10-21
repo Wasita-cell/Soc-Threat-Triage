@@ -2,7 +2,7 @@
 """
 Unified SOC Analyst Investigation Dashboard
 Supports IP Threat Triage, URL Reputation Scanning, Phishing Email (.eml) Analysis,
-File Hash & Attachment Inspection, Automated Containment, and Incident Ticket Handover.
+File Hash Inspection, and Phone/Smishing Intelligence.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from file_inspector import (
     query_file_hash_virustotal,
     generate_hash_containment
 )
+from phone_scanner import inspect_phone_number, generate_phone_containment
 from containment import (
     generate_ip_containment,
     generate_domain_containment,
@@ -37,7 +38,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ SOC Analyst Investigation & Triage Toolkit")
-st.caption("Automated Tier-1 triage pipeline for network logs, IP reputation, suspicious URLs, phishing artifacts, and file hashes.")
+st.caption("Automated Tier-1 triage pipeline for network logs, IP reputation, suspicious URLs, phishing artifacts, file hashes, and smishing leads.")
 
 # Sidebar Configuration
 with st.sidebar:
@@ -45,12 +46,13 @@ with st.sidebar:
     enable_ai = st.checkbox("Enable AI Enrichment (Gemini)", value=False)
     st.info("Automated Webhook alerts dispatch when CRITICAL severity threats are triaged.")
 
-# Tabbed Workspace
-tab_ip, tab_url, tab_email, tab_file = st.tabs([
+# Tabbed Workspace (5 Vectors)
+tab_ip, tab_url, tab_email, tab_file, tab_phone = st.tabs([
     "🌐 IP Threat Intelligence",
     "🔗 URL Reputation Scanner",
     "📧 Phishing Email Analyzer",
-    "📁 File Hash & Malware Inspector"
+    "📁 File Hash & Malware Inspector",
+    "📱 Phone & Smishing Inspector"
 ])
 
 # ==========================================
@@ -83,14 +85,12 @@ with tab_ip:
             with st.spinner("Triaging targets against local cache and threat intelligence feeds..."):
                 triage_records = [process_single_ip(target, use_ai=enable_ai) for target in targets]
 
-            # Metric Summary Cards
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Critical Threats", sum(1 for r in triage_records if r.get("severity") == "CRITICAL"))
             c2.metric("Suspicious", sum(1 for r in triage_records if r.get("severity") == "MEDIUM"))
             c3.metric("Safe / Internal", sum(1 for r in triage_records if r.get("severity") in ["LOW", "INFO"]))
             c4.metric("Format Errors", sum(1 for r in triage_records if r.get("verdict") == "ERROR"))
 
-            # Summary Table
             st.markdown("### Triage Summary")
             df_rows = []
             for r in triage_records:
@@ -107,7 +107,6 @@ with tab_ip:
             df = pd.DataFrame(df_rows)
             st.dataframe(df, use_container_width=True)
 
-            # Detailed Investigation & Containment Actions
             st.markdown("### Detailed Investigation & Response")
             for record in triage_records:
                 ip_label = record.get("ip", "Unknown")
@@ -347,7 +346,6 @@ with tab_file:
                 hashes = file_report.get("hashes", {})
                 st.code(f"SHA-256: {hashes.get('sha256')}\nMD5:     {hashes.get('md5')}\nSHA-1:   {hashes.get('sha1')}", language="text")
 
-                # Heuristics warnings
                 heuristics = file_report.get("heuristics", [])
                 if heuristics:
                     st.warning("⚠️ **File Heuristic Alerts:**")
@@ -356,7 +354,6 @@ with tab_file:
                 else:
                     st.success("No deceptive naming or high-risk execution extensions detected.")
 
-                # Containment & Incident Ticket
                 if severity_label in ["CRITICAL", "MEDIUM"]:
                     st.markdown("---")
                     st.markdown("### 🛑 Recommended Endpoint & EDR Containment")
@@ -387,7 +384,6 @@ with tab_file:
                     st.json(file_report)
 
     else:
-        # Direct Hash lookup
         manual_hash = st.text_input("Enter Target SHA-256 Hash", placeholder="e.g., 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f")
         run_hash_lookup = st.button("Lookup Hash", type="primary")
 
@@ -443,3 +439,90 @@ with tab_file:
 
                     with st.expander("View Raw Threat Intelligence JSON"):
                         st.json(vt_result)
+
+# ==========================================
+# TAB 5: Phone & Smishing Inspector
+# ==========================================
+with tab_phone:
+    st.subheader("Phone Number & SMS Short Code Triage")
+    st.caption("Inspect inbound caller IDs or SMS Short Codes (e.g., 3-4 digit NZ banking codes, VoIP lines, and smishing lures).")
+
+    p_col1, p_col2 = st.columns([3, 1])
+    with p_col1:
+        phone_input = st.text_input(
+            "Target Phone Number or SMS Short Code", 
+            placeholder="e.g., 4444 (ANZ Alert), 898 (NZ Post), or +64 21 123 4567"
+        )
+    with p_col2:
+        default_country = st.selectbox("Default Country Code", ["NZ", "AU", "US", "GB", "TH"], index=0)
+
+    run_phone_scan = st.button("Inspect Sender", type="primary")
+
+    if run_phone_scan:
+        if not phone_input:
+            st.warning("Please provide a phone number to analyze.")
+        else:
+            with st.spinner("Analyzing telephone formatting, carrier metadata, and line risks..."):
+                phone_res = inspect_phone_number(phone_input.strip(), default_region=default_country)
+
+            if not phone_res.get("valid", False):
+                st.error(f"❌ Validation Error: {phone_res.get('error', 'Invalid number')}")
+            else:
+                verdict_label = phone_res.get("verdict", "N/A")
+                severity_label = phone_res.get("severity", "LOW")
+
+                p1, p2, p3, p4 = st.columns(4)
+                p1.metric("Verdict", verdict_label)
+                p2.metric("Severity", severity_label)
+                p3.metric("Line Type", phone_res.get("line_type", "Unknown"))
+                p4.metric("Carrier", phone_res.get("carrier", "Unknown"))
+
+                st.markdown("### 📞 Number Metadata & Formats")
+                st.markdown(f"- **E.164 Standard Format:** `{phone_res.get('e164_format')}`")
+                st.markdown(f"- **International Format:** `{phone_res.get('international_format')}`")
+                st.markdown(f"- **National Format:** `{phone_res.get('national_format')}`")
+                st.markdown(f"- **Identified Region / Location:** `{phone_res.get('region')}`")
+
+                # Heuristics / Verification Alerts
+                heuristics = phone_res.get("heuristics", [])
+                if heuristics:
+                    if severity_label == "LOW":
+                        st.success("✅ **Verified Enterprise Sender:**")
+                        for h in heuristics:
+                            st.markdown(f"- {h}")
+                    else:
+                        st.warning("⚠️ **Heuristic Alerts Detected:**")
+                        for h in heuristics:
+                            st.markdown(f"- {h}")
+                else:
+                    st.success("Standard mobile or fixed line. No anonymous VoIP pattern detected.")
+
+                if severity_label in ["CRITICAL", "MEDIUM"]:
+                    st.markdown("---")
+                    st.markdown("### 🛑 Recommended PBX & Gateway Containment")
+                    e164_target = phone_res.get("e164_format", phone_input.strip())
+                    containment_cmds = generate_phone_containment(e164_target)
+                    for env_name, cmd in containment_cmds.items():
+                        st.markdown(f"**{env_name}:**")
+                        st.code(cmd, language="bash")
+
+                    ticket_md = format_incident_ticket(
+                        incident_type="Phone Intelligence",
+                        target=e164_target,
+                        verdict=verdict_label,
+                        severity=severity_label,
+                        details=phone_res,
+                        containment_actions=containment_cmds
+                    )
+                    st.markdown("### 📋 Incident Handover Ticket (Tier-2 / IR)")
+                    st.text_area("Copy-Paste Incident Ticket (Markdown)", ticket_md, height=220, key="tkt_phone")
+                    st.download_button(
+                        label="📥 Download Phone Incident Ticket",
+                        data=ticket_md,
+                        file_name=f"incident_ticket_phone_{e164_target}.md",
+                        mime="text/markdown",
+                        key="dl_phone"
+                    )
+
+                with st.expander("View Full Phone Telemetry JSON"):
+                    st.json(phone_res)
